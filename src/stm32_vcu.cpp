@@ -37,6 +37,7 @@
 #include "GS450H.h"
 #include "JLR_G1.h"
 #include "JLR_G2.h"
+#include "JLR_L322.h"
 #include "MGCoolantHeater.h"
 #include "NissanPDM.h"
 #include "NoInverter.h"
@@ -180,6 +181,7 @@ static F30_Lever F30GearLever;
 static E65_Lever E65GearLever;
 static JLR_G1 JLRG1shift;
 static JLR_G2 JLRG2shift;
+static JLR_L322 l322Vehicle;
 static vwCoolantHeater heaterCoolantVW;
 static mgCoolantHeater heaterCoolantMG;
 static vwAirHeater heaterAirVW;
@@ -947,6 +949,9 @@ static void UpdateVehicle() {
     break;
   case vehicles::Classic:
     selectedVehicle = &classVehicle;
+    break;
+  case vehicles::vJLR_L322:
+    selectedVehicle = &l322Vehicle;
     break;
   }
   // This will call SetCanFilters() via the Clear Callback
