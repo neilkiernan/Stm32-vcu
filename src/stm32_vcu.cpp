@@ -1390,7 +1390,7 @@ int main(void) {
     CanMapDev = &c2;
   }
   CanMap cm(CanMapDev);
-  CanSdo sdo(&c, &cm);
+  CanSdo sdo(&c2, &cm);      // NK test move SDO server to CAN2. Was: CanSdo sdo(&c, &cm);
   sdo.SetNodeId(3); // id 3 for vcu?
   // Set up CAN 1 callback and messages to listen for
   //  c.AddReceiveCallback(&canCb);
