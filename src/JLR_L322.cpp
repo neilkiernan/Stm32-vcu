@@ -31,19 +31,33 @@
 static uint16_t tempValue = 0; // Not implemented in JLR_L322 yet
 
 void JLR_L322::Task10Ms() {
-  // Review L322 CAN message frequency requirements - gear CAN to Task100Ms()?
-  if (SendCAN == true) {
-    Msg17EC0010(); // TCM: ? Blanked to test if Transfer Case stops activating
-    Msg17C404B0(); // TCM: ? Blanked to test if Transfer Case stops activating
-    Msg17BDFFE0(); // ECM: Dash RPM gauge. Only transmit CAN when in Run mode
-    Msg17E49220(); // ECM: Dash battery red fault lamp, engine system fault
-                   // message
-    Msg17D80420(); // ECM: Dash engine orange fault lamp
-    Msg17E80420(); // ECM: Dash glow plug orange lamp
-
-    // if (Param::GetBool(Param::Transmission))
-    Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: Gear selection (0x43F)
+  // Each frame goes out at the period the real ECM/TCM uses (2008 3.6 TDV8
+  // captures). tick counts 10 ms steps over 1.2 s (the common multiple of 400
+  // and 600 ms). Even ticks are kept for the 20 ms frames (stage 2 adds two
+  // more), and the slower frames are spread over odd ticks, so no more than 3
+  // frames are queued in one tick. The CAN driver has 3 hardware mailboxes and
+  // a small software buffer that drops frames when full, so this keeps
+  // everything in the mailboxes.
+  if (SendCAN) {
+    if ((tick % 2) == 0)
+      Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: gear, 20 ms
+    if ((tick % 6) == 1)
+      Msg17BDFFE0(); // ECM: RPM, 60 ms
+    if ((tick % 6) == 3)
+      Msg17C404B0(); // TCM: 60 ms
+    if ((tick % 6) == 5)
+      Msg17D80420(); // ECM: engine lamp, 60 ms
+    if ((tick % 20) == 7)
+      Msg17E49220(); // ECM: battery lamp, 200 ms
+    if ((tick % 40) == 9)
+      Msg17EC0010(); // TCM: 400 ms
+    if ((tick % 60) == 11)
+      Msg17E80420(); // ECM: glow plug lamp, 600 ms
   }
+
+  tick++;
+  if (tick >= 120)
+    tick = 0;
 }
 
 void JLR_L322::Task100Ms() {
@@ -83,18 +97,20 @@ bool JLR_L322::Start() { return Param::GetBool(Param::din_start); }
 //////////////////// JLR L322 CAN Messages ////////////////////
 void JLR_L322::Msg17EC0010() // TCM: ?
 {
-  uint8_t bytes[3];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x03;
   bytes[1] = 0xE0;
   bytes[2] = 0x23;
 
-  can->Send(0x17EC0010, (uint32_t *)bytes, 3);
+  can->Send(0x17EC0010, data, 3);
 }
 
 void JLR_L322::Msg17C404B0() // TCM: ?
 {
-  uint8_t bytes[7];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x10;
   bytes[1] = 0x32;
@@ -104,7 +120,7 @@ void JLR_L322::Msg17C404B0() // TCM: ?
   bytes[5] = 0xC0;
   bytes[6] = 0x00;
 
-  can->Send(0x17C404B0, (uint32_t *)bytes, 7);
+  can->Send(0x17C404B0, data, 7);
 }
 
 void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge. Only transmit CAN when in
@@ -123,7 +139,8 @@ void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge. Only transmit CAN when in
   speed_input = MIN(6000, speed_input);
   speed_input = (((speed_input * 480) / 500) + 8274);
 
-  uint8_t bytes[5];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x40;
   bytes[1] = 0x00;
@@ -133,7 +150,7 @@ void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge. Only transmit CAN when in
 
   if (opmode == MOD_RUN) // Only transmit CAN when in Run mode
   {
-    can->Send(0x17BDFFE0, bytes, 5);
+    can->Send(0x17BDFFE0, data, 5);
   }
 }
 
@@ -143,7 +160,8 @@ void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
   // Turn on if 12V battery supply (uaux) drops below 11.6V
 
   float battV = Param::GetFloat(Param::uaux);
-  uint8_t bytes[8];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x00;
   bytes[1] = 0x00;
@@ -159,7 +177,7 @@ void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
   bytes[6] = 0x00;
   bytes[7] = 0x79;
 
-  can->Send(0x17E49220, bytes, 8);
+  can->Send(0x17E49220, data, 8);
 }
 
 void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
@@ -168,7 +186,8 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
   // pre-charge when Opmode is Run
 
   int opmode = Param::GetInt(Param::opmode);
-  uint8_t bytes[6];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x3C;
   bytes[1] = 0x7D;
@@ -184,14 +203,15 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
     bytes[5] = 0xA0;
   }
 
-  can->Send(0x17D80420, (uint32_t *)bytes, 6);
+  can->Send(0x17D80420, data, 6);
 }
 
 void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
 {
   // Turned off permanently
 
-  uint8_t bytes[6];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   bytes[0] = 0x3F;
   bytes[1] = 0x00;
@@ -200,7 +220,7 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
   bytes[4] = 0x00;
   bytes[5] = 0x00; // Dash glow plug orange light (0x00 Off, 0x80 On)
 
-  can->Send(0x17E80420, bytes, 6);
+  can->Send(0x17E80420, data, 6);
 }
 
 // Swap in L322 TCM CAN data here for gear selection. How to accommodate Park
@@ -208,7 +228,8 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
 // integrate as an input?
 void JLR_L322::Msg0979BAB0(int8_t gear) // TCM: Gear selection (0x43F)
 {
-  uint8_t bytes[8];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
   switch (gear) {
   case -1: // Reverse
@@ -303,7 +324,7 @@ void JLR_L322::Msg0979BAB0(int8_t gear) // TCM: Gear selection (0x43F)
     break;
   }
 
-  can->Send(0x0979BAB0, bytes, 8);
+  can->Send(0x0979BAB0, data, 8);
 }
 
 void JLR_L322::DecodeCAN(int id, uint32_t *data) {

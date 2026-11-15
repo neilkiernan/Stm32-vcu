@@ -51,9 +51,11 @@ private:
   void Msg17E80420();            // ECM
 
   uint16_t speed;
-  bool BrakeOn;
-  bool AbsCANalive;
+  // Set in DecodeCAN, which runs in the CAN receive interrupt
+  volatile bool BrakeOn;
+  volatile bool AbsCANalive;
   bool SendCAN;
+  uint8_t tick = 0; // 10 ms step counter for the frame schedule (0-119)
 };
 
 #endif /* Can_L322_h */
