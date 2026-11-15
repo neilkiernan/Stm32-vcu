@@ -18,325 +18,342 @@
  */
 
 /*
- * This library supports CAN messages for MY08 Range Rover L322 for driving dash gauges, putting out malf lights, etc
+ * This library supports CAN messages for MY08 Range Rover L322 for driving dash
+ * gauges, putting out malf lights, etc
  */
 
 #include "JLR_L322.h"
-#include "stm32_can.h"
-#include "utils.h"
 #include "digio.h"
 #include "my_math.h"
+#include "stm32_can.h"
+#include "utils.h"
 
-static uint16_t tempValue = 0;   // Not implemented in JLR_L322 yet
+static uint16_t tempValue = 0; // Not implemented in JLR_L322 yet
 
-void JLR_L322::Task10Ms()
-{
-    // Review L322 CAN message frequency requirements - gear CAN to Task100Ms()?
-    if(SendCAN == true)
-    {
-        Msg17EC0010();  // TCM: ? Blanked to test if Transfer Case stops activating
-        Msg17C404B0();  // TCM: ? Blanked to test if Transfer Case stops activating
-        Msg17BDFFE0();  // ECM: Dash RPM gauge. Only transmit CAN when in Run mode
-        Msg17E49220();  // ECM: Dash battery red fault lamp, engine system fault message
-        Msg17D80420();  // ECM: Dash engine orange fault lamp
-        Msg17E80420();  // ECM: Dash glow plug orange lamp
+void JLR_L322::Task10Ms() {
+  // Each frame goes out at the period the real ECM/TCM uses (2008 3.6 TDV8
+  // captures). tick counts 10 ms steps over 1.2 s (the common multiple of 400
+  // and 600 ms). Even ticks are kept for the 20 ms frames (stage 2 adds two
+  // more), and the slower frames are spread over odd ticks, so no more than 3
+  // frames are queued in one tick. The CAN driver has 3 hardware mailboxes and
+  // a small software buffer that drops frames when full, so this keeps
+  // everything in the mailboxes.
+  if (SendCAN) {
+    if ((tick % 2) == 0)
+      Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: gear, 20 ms
+    if ((tick % 6) == 1)
+      Msg17BDFFE0(); // ECM: RPM, 60 ms
+    if ((tick % 6) == 3)
+      Msg17C404B0(); // TCM: 60 ms
+    if ((tick % 6) == 5)
+      Msg17D80420(); // ECM: engine lamp, 60 ms
+    if ((tick % 20) == 7)
+      Msg17E49220(); // ECM: battery lamp, 200 ms
+    if ((tick % 40) == 9)
+      Msg17EC0010(); // TCM: 400 ms
+    if ((tick % 60) == 11)
+      Msg17E80420(); // ECM: glow plug lamp, 600 ms
+  }
 
-        // if (Param::GetBool(Param::Transmission))     
-        Msg0979BAB0(Param::GetInt(Param::dir));  // TCM: Gear selection (0x43F)
-    }
+  tick++;
+  if (tick >= 120)
+    tick = 0;
 }
 
-void JLR_L322::Task100Ms()
-{
-    if(AbsCANalive == true || DigIo::t15_digi.Get())    // Check if 100ms if ABS can frame 0x0BD5FDF0 (0x1F3) has been recieved to say CAN is on
-    {
-        SendCAN = true;
-    }
-    else
-    {
-        SendCAN = false;
-    }
-    AbsCANalive = false;    // Reset flag for next check
+void JLR_L322::Task100Ms() {
+  // Send the ECM/TCM frames while the ignition (T15) is on, plus a short
+  // run-on after key-off. This used to follow the ABS frame as well, which
+  // could keep the network awake after key-off: our frames keep the ABS awake,
+  // and the ABS frame kept our frames going.
+  if (DigIo::t15_digi.Get())
+    runOnCount = RUN_ON_100MS;
+  else if (runOnCount > 0)
+    runOnCount--;
+
+  SendCAN = (runOnCount > 0);
 }
 
-void JLR_L322::SetCanInterface(CanHardware* c)
-{
-    can = c;
-    // can->RegisterUserMessage(0x153);    // E39/E46 ASC1 message. Carry over from DM BMW E39 code for now
-    can->RegisterUserMessage(0x0BD5FDF0);    // JLR L322 ABS CAN
+void JLR_L322::SetCanInterface(CanHardware *c) {
+  can = c;
+  // can->RegisterUserMessage(0x153);    // E39/E46 ASC1 message. Carry over
+  // from DM BMW E39 code for now
+  can->RegisterUserMessage(0x0BD5FDF0); // JLR L322 ABS CAN
 }
 
-void JLR_L322::SetTemperatureGauge(float temp)  // Not implemented in JLR_L322 yet
+void JLR_L322::SetTemperatureGauge(
+    float temp) // Not implemented in JLR_L322 yet
 {
-    tempValue = utils::change(temp,15,80,88,254);   // Map to e39 temp gauge. Carry over from DM BMW E39 for now
+  tempValue = utils::change(
+      temp, 15, 80, 88,
+      254); // Map to e39 temp gauge. Carry over from DM BMW E39 for now
 }
 
-bool JLR_L322::Ready()
-{
-    return DigIo::t15_digi.Get();
-}
+bool JLR_L322::Ready() { return DigIo::t15_digi.Get(); }
 
-bool JLR_L322::Start()
-{
-    return Param::GetBool(Param::din_start);
-}
+bool JLR_L322::Start() { return Param::GetBool(Param::din_start); }
 
-// These messages go out on vehicle CAN and are specific to driving the JLR L322 instrument cluster
+// These messages go out on vehicle CAN and are specific to driving the JLR L322
+// instrument cluster
 
 //////////////////// JLR L322 CAN Messages ////////////////////
-void JLR_L322::Msg17EC0010()    // TCM: ?
+void JLR_L322::Msg17EC0010() // TCM: ?
 {
-    uint8_t bytes[3];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    bytes[0]=0x03;
-    bytes[1]=0xE0;
-    bytes[2]=0x23;
+  bytes[0] = 0x03;
+  bytes[1] = 0xE0;
+  bytes[2] = 0x23;
 
-    can->Send(0x17EC0010, (uint32_t*)bytes,3);
+  can->Send(0x17EC0010, data, 3);
 }
 
-void JLR_L322::Msg17C404B0()    // TCM: ?
+void JLR_L322::Msg17C404B0() // TCM: ?
 {
-    uint8_t bytes[7];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    bytes[0]=0x10;
-    bytes[1]=0x32;
-    bytes[2]=0x00;
-    bytes[3]=0x0B;
-    bytes[4]=0xFF;
-    bytes[5]=0xC0;
-    bytes[6]=0x00;
-    
-    can->Send(0x17C404B0, (uint32_t*)bytes,7);
+  bytes[0] = 0x10;
+  bytes[1] = 0x32;
+  bytes[2] = 0x00;
+  bytes[3] = 0x0B;
+  bytes[4] = 0xFF;
+  bytes[5] = 0xC0;
+  bytes[6] = 0x00;
+
+  can->Send(0x17C404B0, data, 7);
 }
 
-void JLR_L322::Msg17BDFFE0()    // ECM: Dash RPM gauge. Only transmit CAN when in Run mode
+void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge
 {
-    // Dash RPM (Decimal) = 8274 + (speed_input * 0.96)
+  // Dash RPM (Decimal) = 8274 + (speed_input * 0.96)
 
-    int opmode = Param::GetInt(Param::opmode);
-    uint16_t speed_input = speed;
+  // Sent from ignition-on, as the real ECM does. Before Run it reports
+  // 0 rpm (raw 0x2000, as captured from the 3.6 ECM with the ignition on
+  // and the engine stopped), so the other modules see the ECM present.
 
+  int opmode = Param::GetInt(Param::opmode);
+  uint16_t speed_input = 0x2000; // 0 rpm, engine not running
+
+  if (opmode == MOD_RUN) {
     // Limit tachometer range from 750 RPMs - 6000 RPMs at max
-    // These limits ensure the vehicle thinks engine is alive and within the max allowable RPM
-
+    // These limits ensure the vehicle thinks engine is alive and within the
+    // max allowable RPM
+    speed_input = speed;
     speed_input = MAX(750, speed_input);
     speed_input = MIN(6000, speed_input);
-    speed_input = (((speed_input * 480)/500) + 8274);
-    
-    uint8_t bytes[5];
+    speed_input = (((speed_input * 480) / 500) + 8274);
+  }
 
-    bytes[0]=0x40;
-    bytes[1]=0x00;
-    bytes[2]=(speed_input >> 8) & 0xFF;  // RPM MSB
-    bytes[3]=(speed_input) & 0xFF;  // RPM LSB
-    bytes[4]=0x07;
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    if(opmode==MOD_RUN)  // Only transmit CAN when in Run mode
-    {
-      can->Send(0x17BDFFE0, bytes, 5);
-    }
-    
+  bytes[0] = 0x40;
+  bytes[1] = 0x00;
+  bytes[2] = (speed_input >> 8) & 0xFF; // RPM MSB
+  bytes[3] = (speed_input) & 0xFF;      // RPM LSB
+  bytes[4] = 0x07;
+
+  can->Send(0x17BDFFE0, data, 5);
 }
 
-void JLR_L322::Msg17E49220()    // ECM: Dash battery red fault light, engine system fault message
+void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
+                             // fault message
 {
-    // Turn on if 12V battery supply (uaux) drops below 11.6V
-    
-    float battV = Param::GetFloat(Param::uaux);
-    uint8_t bytes[8];
+  // Turn on if 12V battery supply (uaux) drops below 11.6V
 
-    bytes[0]=0x00;
-    bytes[1]=0x00;
-    if(battV < 11.6)  // Dash battery red fault light (0x00 Off, 0x80 On)
-    {
-        bytes[2] = 0x80;
-    }
-    else{
-        bytes[2] = 0x00;
-    }
-    bytes[3]=0x00;
-    bytes[4]=0x19;
-    bytes[5]=0xC8;
-    bytes[6]=0x00;
-    bytes[7]=0x79;
+  float battV = Param::GetFloat(Param::uaux);
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    can->Send(0x17E49220, bytes, 8);
+  bytes[0] = 0x00;
+  bytes[1] = 0x00;
+  if (battV < 11.6) // Dash battery red fault light (0x00 Off, 0x80 On)
+  {
+    bytes[2] = 0x80;
+  } else {
+    bytes[2] = 0x00;
+  }
+  bytes[3] = 0x00;
+  bytes[4] = 0x19;
+  bytes[5] = 0xC8;
+  bytes[6] = 0x00;
+  bytes[7] = 0x79;
+
+  can->Send(0x17E49220, data, 8);
 }
 
-void JLR_L322::Msg17D80420()    // ECM: Dash engine orange fault lamp 
+void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
 {
-    // Turns on at ignition on, stays on for pre-charge, turns off on successful pre-charge when Opmode is Run
+  // Turns on at ignition on, stays on for pre-charge, turns off on successful
+  // pre-charge when Opmode is Run
 
-    int opmode = Param::GetInt(Param::opmode);
-    uint8_t bytes[6];
+  int opmode = Param::GetInt(Param::opmode);
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    bytes[0]=0x3C;
-    bytes[1]=0x7D;
-    bytes[2]=0x40;
-    bytes[3]=0xFB;
-    bytes[4]=0xFF;
-    if(opmode==MOD_RUN)  // Dash engine orange light (0x80 Off, 0xA0 On)
-    {
-      bytes[5]=0x80;
-    }
+  bytes[0] = 0x3C;
+  bytes[1] = 0x7D;
+  bytes[2] = 0x40;
+  bytes[3] = 0xFB;
+  bytes[4] = 0xFF;
+  if (opmode == MOD_RUN) // Dash engine orange light (0x80 Off, 0xA0 On)
+  {
+    bytes[5] = 0x80;
+  }
 
-   else
-   {
-     bytes[5]=0xA0;
-   }
+  else {
+    bytes[5] = 0xA0;
+  }
 
-    can->Send(0x17D80420, (uint32_t*)bytes,6);
+  can->Send(0x17D80420, data, 6);
 }
 
-void JLR_L322::Msg17E80420()    // ECM: Dash glow plug orange lamp
+void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
 {
-    // Turned off permanently
+  // Turned off permanently
 
-    uint8_t bytes[6];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    bytes[0]=0x3F;
-    bytes[1]=0x00;
-    bytes[2]=0x00;
-    bytes[3]=0x28;
-    bytes[4]=0x00;
-    bytes[5]=0x00;  // Dash glow plug orange light (0x00 Off, 0x80 On)
+  bytes[0] = 0x3F;
+  bytes[1] = 0x00;
+  bytes[2] = 0x00;
+  bytes[3] = 0x28;
+  bytes[4] = 0x00;
+  bytes[5] = 0x00; // Dash glow plug orange light (0x00 Off, 0x80 On)
 
-    can->Send(0x17E80420, bytes, 6);
+  can->Send(0x17E80420, data, 6);
 }
 
-
-// Swap in L322 TCM CAN data here for gear selection. How to accommodate Park selection also? GS450H gear selector
-// provides a 12V signal when in Park, integrate as an input? 
-void JLR_L322::Msg0979BAB0(int8_t gear)  // TCM: Gear selection (0x43F)
+// Swap in L322 TCM CAN data here for gear selection. How to accommodate Park
+// selection also? GS450H gear selector provides a 12V signal when in Park,
+// integrate as an input?
+void JLR_L322::Msg0979BAB0(int8_t gear) // TCM: Gear selection (0x43F)
 {
-    uint8_t bytes[8];
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
 
-    switch (gear)
-    {
-    case -1:    // Reverse
-        bytes[0] = 0x87;
-        bytes[1] = 0x80;
-        bytes[2] = 0x00;
-        bytes[4] = 0x1F;
-        bytes[6] = 0xFF;
-        bytes[7] = 0x0C;
+  switch (gear) {
+  case -1: // Reverse
+    bytes[0] = 0x87;
+    bytes[1] = 0x80;
+    bytes[2] = 0x00;
+    bytes[4] = 0x1F;
+    bytes[6] = 0xFF;
+    bytes[7] = 0x0C;
 
-        if(BrakeOn){
-            bytes[3] = 0x87;
-            bytes[5] = 0xF7;
-        }else{
-            bytes[3] = 0xC7;
-            bytes[5] = 0x77;      
-        }
-        break;
-    case 0:   // Neutral
-        bytes[0] = 0x80;
-        bytes[1] = 0x80;
-        bytes[2] = 0x00;
-        bytes[4] = 0x1F;
-        bytes[6] = 0xFF;
-        bytes[7] = 0x0C;
-
-        if(BrakeOn){
-            bytes[3] = 0x87;
-            bytes[5] = 0xF7;
-        }else{
-            bytes[3] = 0xC7;
-            bytes[5] = 0x77;    
-        }
-        break;
-    case 1: // Drive
-        bytes[0] = 0x89;
-        bytes[1] = 0x80;
-        bytes[2] = 0x00;
-        bytes[4] = 0x1F;
-        bytes[6] = 0xFF;
-        bytes[7] = 0x0C;
-
-        if(BrakeOn){
-            bytes[3] = 0x87;
-            bytes[5] = 0xF7;
-        }else{
-            bytes[3] = 0xC7;
-            bytes[5] = 0x77;     
-        }
-        break;
-    case 2:  // Park
-        bytes[0] = 0x88;
-        bytes[1] = 0x80;
-        bytes[2] = 0x00;
-        bytes[4] = 0x1F;
-        bytes[6] = 0xFF;
-        bytes[7] = 0x0C;
-
-        if(BrakeOn){
-            bytes[3] = 0x87;
-            bytes[5] = 0xF7;
-        }else{
-            bytes[3] = 0xC7;
-            bytes[5] = 0x77;      
-        }
-        break;
-    case 3: // Sport
-        bytes[0] = 0x89;
-        bytes[1] = 0x80;
-        bytes[2] = 0x00;
-        bytes[4] = 0x1F;
-        bytes[6] = 0xFF;
-        bytes[7] = 0x3C;
-
-        if(BrakeOn){
-            bytes[3] = 0x87;
-            bytes[5] = 0xF7;
-        }else{
-            bytes[3] = 0xB7;
-            bytes[5] = 0x77;      
-        }
-        break;
-    default:
-        bytes[0] = 0x00;
-        bytes[1] = 0x00;
-        bytes[2] = 0x00;
-        bytes[3] = 0x00;
-        bytes[4] = 0x00;
-        bytes[5] = 0x00;
-        bytes[6] = 0x00;
-        bytes[7] = 0x00;
-        break;
+    if (BrakeOn) {
+      bytes[3] = 0x87;
+      bytes[5] = 0xF7;
+    } else {
+      bytes[3] = 0xC7;
+      bytes[5] = 0x77;
     }
+    break;
+  case 0: // Neutral
+    bytes[0] = 0x80;
+    bytes[1] = 0x80;
+    bytes[2] = 0x00;
+    bytes[4] = 0x1F;
+    bytes[6] = 0xFF;
+    bytes[7] = 0x0C;
 
-    can->Send(0x0979BAB0, bytes, 8);
+    if (BrakeOn) {
+      bytes[3] = 0x87;
+      bytes[5] = 0xF7;
+    } else {
+      bytes[3] = 0xC7;
+      bytes[5] = 0x77;
+    }
+    break;
+  case 1: // Drive
+    bytes[0] = 0x89;
+    bytes[1] = 0x80;
+    bytes[2] = 0x00;
+    bytes[4] = 0x1F;
+    bytes[6] = 0xFF;
+    bytes[7] = 0x0C;
+
+    if (BrakeOn) {
+      bytes[3] = 0x87;
+      bytes[5] = 0xF7;
+    } else {
+      bytes[3] = 0xC7;
+      bytes[5] = 0x77;
+    }
+    break;
+  case 2: // Park
+    bytes[0] = 0x88;
+    bytes[1] = 0x80;
+    bytes[2] = 0x00;
+    bytes[4] = 0x1F;
+    bytes[6] = 0xFF;
+    bytes[7] = 0x0C;
+
+    if (BrakeOn) {
+      bytes[3] = 0x87;
+      bytes[5] = 0xF7;
+    } else {
+      bytes[3] = 0xC7;
+      bytes[5] = 0x77;
+    }
+    break;
+  case 3: // Sport
+    bytes[0] = 0x89;
+    bytes[1] = 0x80;
+    bytes[2] = 0x00;
+    bytes[4] = 0x1F;
+    bytes[6] = 0xFF;
+    bytes[7] = 0x3C;
+
+    if (BrakeOn) {
+      bytes[3] = 0x87;
+      bytes[5] = 0xF7;
+    } else {
+      bytes[3] = 0xB7;
+      bytes[5] = 0x77;
+    }
+    break;
+  default:
+    bytes[0] = 0x00;
+    bytes[1] = 0x00;
+    bytes[2] = 0x00;
+    bytes[3] = 0x00;
+    bytes[4] = 0x00;
+    bytes[5] = 0x00;
+    bytes[6] = 0x00;
+    bytes[7] = 0x00;
+    break;
+  }
+
+  can->Send(0x0979BAB0, data, 8);
 }
 
- 
-void JLR_L322::DecodeCAN(int id, uint32_t* data)
-{
-    uint8_t* bytes = (uint8_t*)data;
+void JLR_L322::DecodeCAN(int id, uint32_t *data) {
+  uint8_t *bytes = (uint8_t *)data;
 
-    if (id == 0x0BD5FDF0)   // L322 ABS CAN. Contains brake status
-    {
-        // Dual purpose. ABS CAN comes alive with ignition on. This ABS CAN ID also contains brake state info
-        // Modify TCM Gear CAN accordingly       
+  if (id == 0x0BD5FDF0) // L322 ABS CAN. Contains brake status
+  {
+    // Dual purpose. ABS CAN comes alive with ignition on. This ABS CAN ID also
+    // contains brake state info Modify TCM Gear CAN accordingly
 
-        if(bytes[6] & 1){  // To be tested. Brake pedal pressed 11101111 (off 11101110)
-            BrakeOn = true;   
-        }else{ 
-            BrakeOn = false;
-        }
-
-       // Alternative method to check brake status, monitor brake input pin
-       /*
-        bool brake = Param::GetBool(Param::din_brake);
-
-        if(brake){  // To be tested
-            BrakeOn = true;   
-        }else{ 
-            BrakeOn = false;
-        }
-        */
-
-        AbsCANalive = true;
+    if (bytes[6] &
+        1) { // To be tested. Brake pedal pressed 11101111 (off 11101110)
+      BrakeOn = true;
+    } else {
+      BrakeOn = false;
     }
-}   
 
+    // Alternative method to check brake status, monitor brake input pin
+    /*
+     bool brake = Param::GetBool(Param::din_brake);
+
+     if(brake){  // To be tested
+         BrakeOn = true;
+     }else{
+         BrakeOn = false;
+     }
+     */
+  }
+}
