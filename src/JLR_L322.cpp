@@ -61,15 +61,16 @@ void JLR_L322::Task10Ms() {
 }
 
 void JLR_L322::Task100Ms() {
-  if (AbsCANalive == true ||
-      DigIo::t15_digi.Get()) // Check if 100ms if ABS can frame 0x0BD5FDF0
-                             // (0x1F3) has been recieved to say CAN is on
-  {
-    SendCAN = true;
-  } else {
-    SendCAN = false;
-  }
-  AbsCANalive = false; // Reset flag for next check
+  // Send the ECM/TCM frames while the ignition (T15) is on, plus a short
+  // run-on after key-off. This used to follow the ABS frame as well, which
+  // could keep the network awake after key-off: our frames keep the ABS awake,
+  // and the ABS frame kept our frames going.
+  if (DigIo::t15_digi.Get())
+    runOnCount = RUN_ON_100MS;
+  else if (runOnCount > 0)
+    runOnCount--;
+
+  SendCAN = (runOnCount > 0);
 }
 
 void JLR_L322::SetCanInterface(CanHardware *c) {
@@ -123,21 +124,26 @@ void JLR_L322::Msg17C404B0() // TCM: ?
   can->Send(0x17C404B0, data, 7);
 }
 
-void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge. Only transmit CAN when in
-                             // Run mode
+void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge
 {
   // Dash RPM (Decimal) = 8274 + (speed_input * 0.96)
 
+  // Sent from ignition-on, as the real ECM does. Before Run it reports
+  // 0 rpm (raw 0x2000, as captured from the 3.6 ECM with the ignition on
+  // and the engine stopped), so the other modules see the ECM present.
+
   int opmode = Param::GetInt(Param::opmode);
-  uint16_t speed_input = speed;
+  uint16_t speed_input = 0x2000; // 0 rpm, engine not running
 
-  // Limit tachometer range from 750 RPMs - 6000 RPMs at max
-  // These limits ensure the vehicle thinks engine is alive and within the max
-  // allowable RPM
-
-  speed_input = MAX(750, speed_input);
-  speed_input = MIN(6000, speed_input);
-  speed_input = (((speed_input * 480) / 500) + 8274);
+  if (opmode == MOD_RUN) {
+    // Limit tachometer range from 750 RPMs - 6000 RPMs at max
+    // These limits ensure the vehicle thinks engine is alive and within the
+    // max allowable RPM
+    speed_input = speed;
+    speed_input = MAX(750, speed_input);
+    speed_input = MIN(6000, speed_input);
+    speed_input = (((speed_input * 480) / 500) + 8274);
+  }
 
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
@@ -148,10 +154,7 @@ void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge. Only transmit CAN when in
   bytes[3] = (speed_input) & 0xFF;      // RPM LSB
   bytes[4] = 0x07;
 
-  if (opmode == MOD_RUN) // Only transmit CAN when in Run mode
-  {
-    can->Send(0x17BDFFE0, data, 5);
-  }
+  can->Send(0x17BDFFE0, data, 5);
 }
 
 void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
@@ -352,7 +355,5 @@ void JLR_L322::DecodeCAN(int id, uint32_t *data) {
          BrakeOn = false;
      }
      */
-
-    AbsCANalive = true;
   }
 }

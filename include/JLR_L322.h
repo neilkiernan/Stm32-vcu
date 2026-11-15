@@ -53,8 +53,10 @@ private:
   uint16_t speed;
   // Set in DecodeCAN, which runs in the CAN receive interrupt
   volatile bool BrakeOn;
-  volatile bool AbsCANalive;
-  bool SendCAN;
+  bool SendCAN = false;
+  // Frames keep going for this long after key-off (in 100 ms steps)
+  static const uint8_t RUN_ON_100MS = 20;
+  uint8_t runOnCount = 0;
   uint8_t tick = 0; // 10 ms step counter for the frame schedule (0-119)
 };
 
