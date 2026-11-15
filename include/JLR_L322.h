@@ -18,43 +18,42 @@
  */
 
 /*
- * This library supports CAN messages for MY08 Range Rover L322 for driving dash gauges, putting out malf lights, etc
+ * This library supports CAN messages for MY08 Range Rover L322 for driving dash
+ * gauges, putting out malf lights, etc
  */
 
 #ifndef JLR_L322_h
 #define JLR_L322_h
 
-#include <stdint.h>
 #include "vehicle.h"
+#include <stdint.h>
 
-class JLR_L322: public Vehicle
-{
+class JLR_L322 : public Vehicle {
 
 public:
-   void SetCanInterface(CanHardware* c);
-   void Task10Ms();
-   void Task100Ms();
-   void SetRevCounter(int s) { speed = s; }
-   void SetTemperatureGauge(float temp);  // Not implemented in JLR_L322 yet
-   void DecodeCAN(int id, uint32_t* data);
-   bool Ready();
-   bool Start();
-   // void SetE46(bool e46) { isE46 = e46; }
+  void SetCanInterface(CanHardware *c);
+  void Task10Ms();
+  void Task100Ms();
+  void SetRevCounter(int s) { speed = s; }
+  void SetTemperatureGauge(float temp); // Not implemented in JLR_L322 yet
+  void DecodeCAN(int id, uint32_t *data);
+  bool Ready();
+  bool Start();
+  // void SetE46(bool e46) { isE46 = e46; }
 
 private:
-   void Msg0979BAB0(int8_t gear);   // TCM(0x43F)
-   void Msg17EC0010(); // TCM
-   void Msg17C404B0(); // TCM
-   void Msg17BDFFE0();  // ECM
-   void Msg17E49220();  // ECM
-   void Msg17D80420();  // ECM
-   void Msg17E80420();  // ECM
+  void Msg0979BAB0(int8_t gear); // TCM(0x43F)
+  void Msg17EC0010();            // TCM
+  void Msg17C404B0();            // TCM
+  void Msg17BDFFE0();            // ECM
+  void Msg17E49220();            // ECM
+  void Msg17D80420();            // ECM
+  void Msg17E80420();            // ECM
 
-   uint16_t speed;
-   bool BrakeOn;
-   bool AbsCANalive;
-   bool SendCAN;
+  uint16_t speed;
+  bool BrakeOn;
+  bool AbsCANalive;
+  bool SendCAN;
 };
 
 #endif /* Can_L322_h */
-
