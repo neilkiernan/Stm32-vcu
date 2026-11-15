@@ -33,14 +33,17 @@ static uint16_t tempValue = 0; // Not implemented in JLR_L322 yet
 void JLR_L322::Task10Ms() {
   // Each frame goes out at the period the real ECM/TCM uses (2008 3.6 TDV8
   // captures). tick counts 10 ms steps over 1.2 s (the common multiple of 400
-  // and 600 ms). Even ticks are kept for the 20 ms frames (stage 2 adds two
-  // more), and the slower frames are spread over odd ticks, so no more than 3
-  // frames are queued in one tick. The CAN driver has 3 hardware mailboxes and
+  // and 600 ms). Even ticks are kept for the three 20 ms frames, and the
+  // slower frames are spread over odd ticks, so no more than 3 frames are
+  // queued in one tick. The CAN driver has 3 hardware mailboxes and
   // a small software buffer that drops frames when full, so this keeps
   // everything in the mailboxes.
   if (SendCAN) {
-    if ((tick % 2) == 0)
+    if ((tick % 2) == 0) {
       Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: gear, 20 ms
+      Msg071C0AA0();                          // ECM: torques, 20 ms
+      Msg17A9FFE0(); // ECM: pedal and torques, 20 ms (real ECM ~24 ms)
+    }
     if ((tick % 6) == 1)
       Msg17BDFFE0(); // ECM: RPM, 60 ms
     if ((tick % 6) == 3)
@@ -155,6 +158,48 @@ void JLR_L322::Msg17BDFFE0() // ECM: Dash RPM gauge
   bytes[4] = 0x07;
 
   can->Send(0x17BDFFE0, data, 5);
+}
+
+void JLR_L322::Msg071C0AA0() // ECM: engine torques
+{
+  // Read by the ABS and transfer box. Without it and 17A9FFE0, the ABS
+  // shows the same flags as with the real ECM unplugged (108CF1F0 byte 1,
+  // 0BD5FDF0 bytes 2-3), the likely cause of the HDC fault.
+  // Three 11-bit torque fields at bits 2, 18 and 34. 0x3FF = 0 Nm, as the
+  // real ECM sends with the engine stopped. Static at 0 Nm until the scaling
+  // is verified, because the ABS uses engine torque for traction control.
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
+
+  bytes[0] = 0x03;
+  bytes[1] = 0xFF;
+  bytes[2] = 0x03;
+  bytes[3] = 0xFF;
+  bytes[4] = 0x33;
+  bytes[5] = 0xFF;
+
+  can->Send(0x071C0AA0, data, 6);
+}
+
+void JLR_L322::Msg17A9FFE0() // ECM: accelerator pedal and torques
+{
+  // Read by the ABS, gearbox and transfer box. Byte 3 = pedal x0.5 %, byte 0 =
+  // virtual pedal, byte 4 bit 3 = kickdown, torque fields at bits 10, 34 and
+  // 50. Static at 0 % pedal and 0 Nm, as captured from the 3.6 ECM at
+  // ignition on with the engine stopped.
+  uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
+  uint8_t *bytes = (uint8_t *)data;
+
+  bytes[0] = 0x00;
+  bytes[1] = 0x03;
+  bytes[2] = 0xFF;
+  bytes[3] = 0x00;
+  bytes[4] = 0xE3;
+  bytes[5] = 0xFF;
+  bytes[6] = 0xFB;
+  bytes[7] = 0xFF;
+
+  can->Send(0x17A9FFE0, data, 8);
 }
 
 void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
