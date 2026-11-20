@@ -57,6 +57,7 @@ private:
   uint16_t speed;
   // Set in DecodeCAN, which runs in the CAN receive interrupt
   volatile bool BrakeOn;
+  volatile uint8_t TerrainMode = 0; // requested by the Terrain Response switch
   bool SendCAN = false;
   // Frames keep going for this long after key-off (in 100 ms steps)
   static const uint8_t RUN_ON_100MS = 20;

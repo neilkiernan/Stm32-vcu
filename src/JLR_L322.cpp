@@ -81,6 +81,7 @@ void JLR_L322::SetCanInterface(CanHardware *c) {
   // can->RegisterUserMessage(0x153);    // E39/E46 ASC1 message. Carry over
   // from DM BMW E39 code for now
   can->RegisterUserMessage(0x0BD5FDF0); // JLR L322 ABS CAN
+  can->RegisterUserMessage(0x17E012B0); // Terrain Response switch
 }
 
 void JLR_L322::SetTemperatureGauge(
@@ -251,6 +252,8 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
   else {
     bytes[5] = 0xA0;
   }
+  // Bits 2-0: Terrain Response mode echo (as the 3.6 ECM does)
+  bytes[5] |= (TerrainMode & 0x07);
 
   can->Send(0x17D80420, data, 6);
 }
@@ -361,5 +364,16 @@ void JLR_L322::DecodeCAN(int id, uint32_t *data) {
          BrakeOn = false;
      }
      */
+  }
+
+  if (id == 0x17E012B0) // Terrain Response switch module
+  {
+    // Byte 1 low nibble = requested mode: 0 General, 1 Grass/Gravel/Snow,
+    // 3 Sand, 4 Mud & Ruts, 5 Rock Crawl, 7 fail-safe. Every powertrain module
+    // must echo the mode back; without the ECM echo the switch module flags
+    // invalid ECM data (U0401) after about 1 s and goes to fail-safe. In
+    // fail-safe the other modules return to General, so we do the same.
+    uint8_t mode = bytes[1] & 0x0F;
+    TerrainMode = (mode <= 5) ? mode : 0;
   }
 }
