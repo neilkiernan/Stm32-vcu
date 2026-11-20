@@ -40,8 +40,8 @@ void JLR_L322::Task10Ms() {
   // everything in the mailboxes.
   if (SendCAN) {
     if ((tick % 2) == 0) {
-      Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: gear, 20 ms
-      Msg071C0AA0();                          // ECM: torques, 20 ms
+      Msg0979BAB0(); // TCM: selector position, 20 ms
+      Msg071C0AA0(); // ECM: torques, 20 ms
       Msg17A9FFE0(); // ECM: pedal and torques, 20 ms (real ECM ~24 ms)
     }
     if ((tick % 6) == 1)
@@ -111,12 +111,13 @@ void JLR_L322::Msg17EC0010() // TCM: ?
   can->Send(0x17EC0010, data, 3);
 }
 
-void JLR_L322::Msg17C404B0() // TCM: ?
+void JLR_L322::Msg17C404B0() // TCM: gear state and output shaft speed
 {
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
 
-  bytes[0] = 0x10;
+  // Byte 0 follows the lever: 0x10 in P/R/N, 0x38 in D (3.6 TCM captures)
+  bytes[0] = (GetLever() == LEVER_D) ? 0x38 : 0x10;
   bytes[1] = 0x32;
   bytes[2] = 0x00;
   bytes[3] = 0x0B;
@@ -271,105 +272,65 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
   can->Send(0x17E80420, data, 6);
 }
 
-// Swap in L322 TCM CAN data here for gear selection. How to accommodate Park
-// selection also? GS450H gear selector provides a 12V signal when in Park,
-// integrate as an input?
-void JLR_L322::Msg0979BAB0(int8_t gear) // TCM: Gear selection (0x43F)
+// Selector lever position, read from the physical inputs rather than the
+// VCU's accepted direction (dir), so the transfer box and dash always see
+// where the lever really is. Park comes from the GS450H 12 V Park output on
+// the GP 12 V input (din_12Vgp; leave GP12VInFunc at 0 so it has no other
+// function). Forward and reverse are the normal direction inputs.
+JLR_L322::Lever JLR_L322::GetLever() {
+  bool fwd = Param::GetBool(Param::din_forward);
+  bool rev = Param::GetBool(Param::din_reverse);
+
+  if (Param::GetBool(Param::din_12Vgp))
+    return LEVER_P;
+  if (fwd && !rev)
+    return LEVER_D;
+  if (rev && !fwd)
+    return LEVER_R;
+  return LEVER_N;
+}
+
+void JLR_L322::Msg0979BAB0() // TCM: selector position and brake
 {
+  // Values from the 3.6 TCM (2021 captures). Byte 0 = lever position.
+  // Bytes 3 and 5 follow the brake: pressed 0x87/0xF7, released 0xC7/0x77
+  // (bit 6 of byte 3 set and bit 7 of byte 5 clear when released). Byte 7 =
+  // 0x0C in P/R/N, 0x3C in D, 0x7C in R with the engine running.
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
+  Lever lever = GetLever();
+  bool run = (Param::GetInt(Param::opmode) == MOD_RUN);
 
-  switch (gear) {
-  case -1: // Reverse
-    bytes[0] = 0x87;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
+  bytes[1] = 0x80;
+  bytes[2] = 0x00;
+  bytes[3] = 0x87;
+  bytes[4] = 0x1F;
+  bytes[5] = 0xF7;
+  bytes[6] = 0xFF;
+  bytes[7] = 0x0C;
 
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 0: // Neutral
-    bytes[0] = 0x80;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 1: // Drive
-    bytes[0] = 0x89;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 2: // Park
+  switch (lever) {
+  case LEVER_P:
     bytes[0] = 0x88;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
     break;
-  case 3: // Sport
+  case LEVER_R:
+    bytes[0] = 0x87;
+    if (run)
+      bytes[7] = 0x7C;
+    break;
+  case LEVER_N:
+    bytes[0] = 0x80;
+    break;
+  case LEVER_D:
     bytes[0] = 0x89;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
+    bytes[3] = 0xB7;
     bytes[7] = 0x3C;
+    break;
+  }
 
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xB7;
-      bytes[5] = 0x77;
-    }
-    break;
-  default:
-    bytes[0] = 0x00;
-    bytes[1] = 0x00;
-    bytes[2] = 0x00;
-    bytes[3] = 0x00;
-    bytes[4] = 0x00;
-    bytes[5] = 0x00;
-    bytes[6] = 0x00;
-    bytes[7] = 0x00;
-    break;
+  if (!BrakeOn) {
+    bytes[3] |= 0x40; // brake released
+    bytes[5] &= 0x7F;
   }
 
   can->Send(0x0979BAB0, data, 8);
