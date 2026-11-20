@@ -49,6 +49,8 @@ private:
   void Msg17E49220();            // ECM
   void Msg17D80420();            // ECM
   void Msg17E80420();            // ECM
+  void Msg071C0AA0();            // ECM
+  void Msg17A9FFE0();            // ECM
 
   uint16_t speed;
   // Set in DecodeCAN, which runs in the CAN receive interrupt
