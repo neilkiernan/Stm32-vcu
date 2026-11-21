@@ -117,8 +117,9 @@ void JLR_L322::Msg17C404B0() // TCM: gear state and output shaft speed
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
 
-  // Byte 0 follows the lever: 0x10 in P/R/N, 0x38 in D (3.6 TCM captures)
-  bytes[0] = (GetLever() == LEVER_D) ? 0x38 : 0x10;
+  // Byte 0 = 0x10. The 3.6 TCM sent 0x38 in D only when in Sport/manual
+  // mode, so it stays at 0x10 in every gear.
+  bytes[0] = 0x10;
   bytes[1] = 0x32;
   bytes[2] = 0x00;
   bytes[3] = 0x0B;
@@ -298,7 +299,8 @@ void JLR_L322::Msg0979BAB0() // TCM: selector position and brake
   // Values from the 3.6 TCM (2021 captures). Byte 0 = lever position.
   // Bytes 3 and 5 follow the brake: pressed 0x87/0xF7, released 0xC7/0x77
   // (bit 6 of byte 3 set and bit 7 of byte 5 clear when released). Byte 7 =
-  // 0x0C in P/R/N, 0x3C in D, 0x7C in R with the engine running.
+  // 0x0C, or 0x7C in R with the engine running. Byte 7 = 0x3C (with byte 3 =
+  // 0xB7) is Sport: the dash shows S, so it is not used.
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
   Lever lever = GetLever();
@@ -326,8 +328,6 @@ void JLR_L322::Msg0979BAB0() // TCM: selector position and brake
     break;
   case LEVER_D:
     bytes[0] = 0x89;
-    bytes[3] = 0xB7;
-    bytes[7] = 0x3C;
     break;
   }
 
