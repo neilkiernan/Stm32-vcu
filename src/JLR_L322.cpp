@@ -24,11 +24,10 @@
 
 #include "JLR_L322.h"
 #include "digio.h"
+#include "errormessage.h"
 #include "my_math.h"
 #include "stm32_can.h"
 #include "utils.h"
-
-static uint16_t tempValue = 0; // Not implemented in JLR_L322 yet
 
 void JLR_L322::Task10Ms() {
   // Each frame goes out at the period the real ECM/TCM uses (2008 3.6 TDV8
@@ -74,6 +73,26 @@ void JLR_L322::Task100Ms() {
     runOnCount--;
 
   SendCAN = (runOnCount > 0);
+
+  // Glow plug lamp inputs (see Msg17E80420)
+  // New fault: a VCU error has been logged since this ignition-on. The error
+  // memory keeps entries across key cycles, so compare a fingerprint of its
+  // timestamps with the one taken at ignition-on.
+  uint32_t errPrint = 0;
+  for (uint8_t i = 0; i < ERROR_BUF_SIZE; i++)
+    errPrint += ErrorMessage::GetErrorTime(i);
+  bool t15 = DigIo::t15_digi.Get();
+  if (t15 && !t15Prev)
+    errPrintAtKeyOn = errPrint;
+  t15Prev = t15;
+  NewFault = t15 && (errPrint != errPrintAtKeyOn);
+
+  // Power limited: any torque derate reason (voltage, current or temperature
+  // limits), held for 2 s so short limits are still visible
+  if (Param::GetInt(Param::TorqDerate) != 0)
+    derateHold = 20;
+  else if (derateHold > 0)
+    derateHold--;
 }
 
 void JLR_L322::SetCanInterface(CanHardware *c) {
@@ -84,12 +103,23 @@ void JLR_L322::SetCanInterface(CanHardware *c) {
   can->RegisterUserMessage(0x17E012B0); // Terrain Response switch
 }
 
-void JLR_L322::SetTemperatureGauge(
-    float temp) // Not implemented in JLR_L322 yet
-{
-  tempValue = utils::change(
-      temp, 15, 80, 88,
-      254); // Map to e39 temp gauge. Carry over from DM BMW E39 for now
+void JLR_L322::SetTemperatureGauge(float temp) {
+  // The dash temperature gauge (ECM coolant temperature) shows how close the
+  // inverter or the motor is to its derating limit (tmphsmax, tmpmmax),
+  // whichever is closer. These are the limits the VCU already uses to cut
+  // power, so a hot gauge means power is about to be reduced.
+  //   0 % of the limit -> 20 C (cold)
+  //  ~60 %             -> ~85 C (middle; inverter about 50 C with the
+  //                       default tmphsmax of 85 C)
+  // 100 %              -> 125 C (hot)
+  float hsMax = Param::GetFloat(Param::tmphsmax);
+  float mMax = Param::GetFloat(Param::tmpmmax);
+  float fracHs = (hsMax > 1) ? temp / hsMax : 0;
+  float fracM = (mMax > 1) ? Param::GetFloat(Param::tmpm) / mMax : 0;
+  float frac = MAX(fracHs, fracM);
+  frac = MAX(0.0f, MIN(1.2f, frac));
+
+  GaugeTemp = (int16_t)(20 + frac * 105); // degrees C
 }
 
 bool JLR_L322::Ready() { return DigIo::t15_digi.Get(); }
@@ -205,28 +235,37 @@ void JLR_L322::Msg17A9FFE0() // ECM: accelerator pedal and torques
   can->Send(0x17A9FFE0, data, 8);
 }
 
-void JLR_L322::Msg17E49220() // ECM: Dash battery red fault light, engine system
-                             // fault message
+void JLR_L322::Msg17E49220() // ECM: battery voltage, charge warning lamp
 {
-  // Turn on if 12V battery supply (uaux) drops below 11.6V
-
+  // Byte 2 bit 7 is the red battery (charge) lamp, which the real ECM sets
+  // whenever the alternator isn't charging: engine stopped, or a charging
+  // fault. Other modules also read it as "engine not running".
+  // Here: on until Run, like a real car before starting; in Run, on if the
+  // 12 V supply (uaux) stays below DCDC_LOW_V for 2 s, i.e. the DC-DC isn't
+  // charging. A working DC-DC holds well above it; a resting battery sits
+  // below it.
   float battV = Param::GetFloat(Param::uaux);
+  bool run = (Param::GetInt(Param::opmode) == MOD_RUN);
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
 
+  if (run && battV < DCDC_LOW_V) {
+    if (dcdcLowCount < 10) // 10 x 200 ms = 2 s
+      dcdcLowCount++;
+  } else {
+    dcdcLowCount = 0;
+  }
+  bool lamp = !run || (dcdcLowCount >= 10);
+
   bytes[0] = 0x00;
   bytes[1] = 0x00;
-  if (battV < 11.6) // Dash battery red fault light (0x00 Off, 0x80 On)
-  {
-    bytes[2] = 0x80;
-  } else {
-    bytes[2] = 0x00;
-  }
+  bytes[2] = lamp ? 0x80 : 0x00;
   bytes[3] = 0x00;
   bytes[4] = 0x19;
   bytes[5] = 0xC8;
   bytes[6] = 0x00;
-  bytes[7] = 0x79;
+  // Battery voltage x0.1 V
+  bytes[7] = (uint8_t)(MAX(0.0f, MIN(25.5f, battV)) * 10);
 
   can->Send(0x17E49220, data, 8);
 }
@@ -242,7 +281,7 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
 
   bytes[0] = 0x3C;
   bytes[1] = 0x7D;
-  bytes[2] = 0x40;
+  bytes[2] = (uint8_t)(GaugeTemp + 60); // coolant temperature, C + 60
   bytes[3] = 0xFB;
   bytes[4] = 0xFF;
   if (opmode == MOD_RUN) // Dash engine orange light (0x80 Off, 0xA0 On)
@@ -261,7 +300,21 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
 
 void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
 {
-  // Turned off permanently
+  // Glow plug lamp, reused as the EV "wait / reduced power" lamp:
+  //  - flashing: a VCU error has been logged since ignition-on (see lasterr
+  //    in the web interface)
+  //  - steady in Run: power is being limited (TorqDerate: battery voltage or
+  //    current limits from the BMS, or inverter/motor temperature)
+  //  - off otherwise
+  // This frame goes every 600 ms, so the lamp flashes at about 0.8 Hz.
+  bool run = (Param::GetInt(Param::opmode) == MOD_RUN);
+  bool lamp;
+  if (NewFault) {
+    glowFlash = !glowFlash;
+    lamp = glowFlash;
+  } else {
+    lamp = run && (derateHold > 0);
+  }
 
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
@@ -271,7 +324,7 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
   bytes[2] = 0x00;
   bytes[3] = 0x28;
   bytes[4] = 0x00;
-  bytes[5] = 0x00; // Dash glow plug orange light (0x00 Off, 0x80 On)
+  bytes[5] = lamp ? 0x80 : 0x00; // Dash glow plug orange light
 
   can->Send(0x17E80420, data, 6);
 }
