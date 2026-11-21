@@ -35,7 +35,7 @@ public:
   void Task10Ms();
   void Task100Ms();
   void SetRevCounter(int s) { speed = s; }
-  void SetTemperatureGauge(float temp); // Not implemented in JLR_L322 yet
+  void SetTemperatureGauge(float temp);
   void DecodeCAN(int id, uint32_t *data);
   bool Ready();
   bool Start();
@@ -62,7 +62,11 @@ private:
   // Frames keep going for this long after key-off (in 100 ms steps)
   static const uint8_t RUN_ON_100MS = 20;
   uint8_t runOnCount = 0;
-  uint8_t tick = 0; // 10 ms step counter for the frame schedule (0-119)
+  uint8_t tick = 0;       // 10 ms step counter for the frame schedule (0-119)
+  int16_t GaugeTemp = 20; // dash temperature gauge, C
+  // Below this in Run, the DC-DC is taken as not charging (battery lamp on)
+  static constexpr float DCDC_LOW_V = 12.8f;
+  uint8_t dcdcLowCount = 0;
 };
 
 #endif /* Can_L322_h */
