@@ -42,19 +42,22 @@ public:
   // void SetE46(bool e46) { isE46 = e46; }
 
 private:
-  void Msg0979BAB0(int8_t gear); // TCM(0x43F)
-  void Msg17EC0010();            // TCM
-  void Msg17C404B0();            // TCM
-  void Msg17BDFFE0();            // ECM
-  void Msg17E49220();            // ECM
-  void Msg17D80420();            // ECM
-  void Msg17E80420();            // ECM
-  void Msg071C0AA0();            // ECM
-  void Msg17A9FFE0();            // ECM
+  enum Lever { LEVER_P, LEVER_R, LEVER_N, LEVER_D };
+  Lever GetLever();
+  void Msg0979BAB0(); // TCM
+  void Msg17EC0010(); // TCM
+  void Msg17C404B0(); // TCM
+  void Msg17BDFFE0(); // ECM
+  void Msg17E49220(); // ECM
+  void Msg17D80420(); // ECM
+  void Msg17E80420(); // ECM
+  void Msg071C0AA0(); // ECM
+  void Msg17A9FFE0(); // ECM
 
   uint16_t speed;
   // Set in DecodeCAN, which runs in the CAN receive interrupt
   volatile bool BrakeOn;
+  volatile uint8_t TerrainMode = 0; // requested by the Terrain Response switch
   bool SendCAN = false;
   // Frames keep going for this long after key-off (in 100 ms steps)
   static const uint8_t RUN_ON_100MS = 20;

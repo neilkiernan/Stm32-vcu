@@ -40,8 +40,8 @@ void JLR_L322::Task10Ms() {
   // everything in the mailboxes.
   if (SendCAN) {
     if ((tick % 2) == 0) {
-      Msg0979BAB0(Param::GetInt(Param::dir)); // TCM: gear, 20 ms
-      Msg071C0AA0();                          // ECM: torques, 20 ms
+      Msg0979BAB0(); // TCM: selector position, 20 ms
+      Msg071C0AA0(); // ECM: torques, 20 ms
       Msg17A9FFE0(); // ECM: pedal and torques, 20 ms (real ECM ~24 ms)
     }
     if ((tick % 6) == 1)
@@ -81,6 +81,7 @@ void JLR_L322::SetCanInterface(CanHardware *c) {
   // can->RegisterUserMessage(0x153);    // E39/E46 ASC1 message. Carry over
   // from DM BMW E39 code for now
   can->RegisterUserMessage(0x0BD5FDF0); // JLR L322 ABS CAN
+  can->RegisterUserMessage(0x17E012B0); // Terrain Response switch
 }
 
 void JLR_L322::SetTemperatureGauge(
@@ -111,11 +112,13 @@ void JLR_L322::Msg17EC0010() // TCM: ?
   can->Send(0x17EC0010, data, 3);
 }
 
-void JLR_L322::Msg17C404B0() // TCM: ?
+void JLR_L322::Msg17C404B0() // TCM: gear state and output shaft speed
 {
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
 
+  // Byte 0 = 0x10. The 3.6 TCM sent 0x38 in D only when in Sport/manual
+  // mode, so it stays at 0x10 in every gear.
   bytes[0] = 0x10;
   bytes[1] = 0x32;
   bytes[2] = 0x00;
@@ -250,6 +253,8 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
   else {
     bytes[5] = 0xA0;
   }
+  // Bits 2-0: Terrain Response mode echo (as the 3.6 ECM does)
+  bytes[5] |= (TerrainMode & 0x07);
 
   can->Send(0x17D80420, data, 6);
 }
@@ -271,105 +276,64 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
   can->Send(0x17E80420, data, 6);
 }
 
-// Swap in L322 TCM CAN data here for gear selection. How to accommodate Park
-// selection also? GS450H gear selector provides a 12V signal when in Park,
-// integrate as an input?
-void JLR_L322::Msg0979BAB0(int8_t gear) // TCM: Gear selection (0x43F)
+// Selector lever position, read from the physical inputs rather than the
+// VCU's accepted direction (dir), so the transfer box and dash always see
+// where the lever really is. Park comes from the GS450H 12 V Park output on
+// the GP 12 V input (din_12Vgp; leave GP12VInFunc at 0 so it has no other
+// function). Forward and reverse are the normal direction inputs.
+JLR_L322::Lever JLR_L322::GetLever() {
+  bool fwd = Param::GetBool(Param::din_forward);
+  bool rev = Param::GetBool(Param::din_reverse);
+
+  if (Param::GetBool(Param::din_12Vgp))
+    return LEVER_P;
+  if (fwd && !rev)
+    return LEVER_D;
+  if (rev && !fwd)
+    return LEVER_R;
+  return LEVER_N;
+}
+
+void JLR_L322::Msg0979BAB0() // TCM: selector position and brake
 {
+  // Values from the 3.6 TCM (2021 captures). Byte 0 = lever position.
+  // Bytes 3 and 5 follow the brake: pressed 0x87/0xF7, released 0xC7/0x77
+  // (bit 6 of byte 3 set and bit 7 of byte 5 clear when released). Byte 7 =
+  // 0x0C, or 0x7C in R with the engine running. Byte 7 = 0x3C (with byte 3 =
+  // 0xB7) is Sport: the dash shows S, so it is not used.
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
+  Lever lever = GetLever();
+  bool run = (Param::GetInt(Param::opmode) == MOD_RUN);
 
-  switch (gear) {
-  case -1: // Reverse
-    bytes[0] = 0x87;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
+  bytes[1] = 0x80;
+  bytes[2] = 0x00;
+  bytes[3] = 0x87;
+  bytes[4] = 0x1F;
+  bytes[5] = 0xF7;
+  bytes[6] = 0xFF;
+  bytes[7] = 0x0C;
 
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 0: // Neutral
-    bytes[0] = 0x80;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 1: // Drive
-    bytes[0] = 0x89;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
-    break;
-  case 2: // Park
+  switch (lever) {
+  case LEVER_P:
     bytes[0] = 0x88;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x0C;
-
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xC7;
-      bytes[5] = 0x77;
-    }
     break;
-  case 3: // Sport
+  case LEVER_R:
+    bytes[0] = 0x87;
+    if (run)
+      bytes[7] = 0x7C;
+    break;
+  case LEVER_N:
+    bytes[0] = 0x80;
+    break;
+  case LEVER_D:
     bytes[0] = 0x89;
-    bytes[1] = 0x80;
-    bytes[2] = 0x00;
-    bytes[4] = 0x1F;
-    bytes[6] = 0xFF;
-    bytes[7] = 0x3C;
+    break;
+  }
 
-    if (BrakeOn) {
-      bytes[3] = 0x87;
-      bytes[5] = 0xF7;
-    } else {
-      bytes[3] = 0xB7;
-      bytes[5] = 0x77;
-    }
-    break;
-  default:
-    bytes[0] = 0x00;
-    bytes[1] = 0x00;
-    bytes[2] = 0x00;
-    bytes[3] = 0x00;
-    bytes[4] = 0x00;
-    bytes[5] = 0x00;
-    bytes[6] = 0x00;
-    bytes[7] = 0x00;
-    break;
+  if (!BrakeOn) {
+    bytes[3] |= 0x40; // brake released
+    bytes[5] &= 0x7F;
   }
 
   can->Send(0x0979BAB0, data, 8);
@@ -400,5 +364,16 @@ void JLR_L322::DecodeCAN(int id, uint32_t *data) {
          BrakeOn = false;
      }
      */
+  }
+
+  if (id == 0x17E012B0) // Terrain Response switch module
+  {
+    // Byte 1 low nibble = requested mode: 0 General, 1 Grass/Gravel/Snow,
+    // 3 Sand, 4 Mud & Ruts, 5 Rock Crawl, 7 fail-safe. Every powertrain module
+    // must echo the mode back; without the ECM echo the switch module flags
+    // invalid ECM data (U0401) after about 1 s and goes to fail-safe. In
+    // fail-safe the other modules return to General, so we do the same.
+    uint8_t mode = bytes[1] & 0x0F;
+    TerrainMode = (mode <= 5) ? mode : 0;
   }
 }
