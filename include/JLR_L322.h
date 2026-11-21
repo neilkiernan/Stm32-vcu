@@ -67,6 +67,12 @@ private:
   // Below this in Run, the DC-DC is taken as not charging (battery lamp on)
   static constexpr float DCDC_LOW_V = 12.8f;
   uint8_t dcdcLowCount = 0;
+  // Glow plug lamp: new VCU fault (flash) or power limited (steady)
+  bool t15Prev = false;
+  uint32_t errPrintAtKeyOn = 0;
+  bool NewFault = false;
+  uint8_t derateHold = 0; // 100 ms steps
+  bool glowFlash = false;
 };
 
 #endif /* Can_L322_h */

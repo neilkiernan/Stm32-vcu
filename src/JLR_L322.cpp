@@ -24,6 +24,7 @@
 
 #include "JLR_L322.h"
 #include "digio.h"
+#include "errormessage.h"
 #include "my_math.h"
 #include "stm32_can.h"
 #include "utils.h"
@@ -72,6 +73,26 @@ void JLR_L322::Task100Ms() {
     runOnCount--;
 
   SendCAN = (runOnCount > 0);
+
+  // Glow plug lamp inputs (see Msg17E80420)
+  // New fault: a VCU error has been logged since this ignition-on. The error
+  // memory keeps entries across key cycles, so compare a fingerprint of its
+  // timestamps with the one taken at ignition-on.
+  uint32_t errPrint = 0;
+  for (uint8_t i = 0; i < ERROR_BUF_SIZE; i++)
+    errPrint += ErrorMessage::GetErrorTime(i);
+  bool t15 = DigIo::t15_digi.Get();
+  if (t15 && !t15Prev)
+    errPrintAtKeyOn = errPrint;
+  t15Prev = t15;
+  NewFault = t15 && (errPrint != errPrintAtKeyOn);
+
+  // Power limited: any torque derate reason (voltage, current or temperature
+  // limits), held for 2 s so short limits are still visible
+  if (Param::GetInt(Param::TorqDerate) != 0)
+    derateHold = 20;
+  else if (derateHold > 0)
+    derateHold--;
 }
 
 void JLR_L322::SetCanInterface(CanHardware *c) {
@@ -279,7 +300,21 @@ void JLR_L322::Msg17D80420() // ECM: Dash engine orange fault lamp
 
 void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
 {
-  // Turned off permanently
+  // Glow plug lamp, reused as the EV "wait / reduced power" lamp:
+  //  - flashing: a VCU error has been logged since ignition-on (see lasterr
+  //    in the web interface)
+  //  - steady in Run: power is being limited (TorqDerate: battery voltage or
+  //    current limits from the BMS, or inverter/motor temperature)
+  //  - off otherwise
+  // This frame goes every 600 ms, so the lamp flashes at about 0.8 Hz.
+  bool run = (Param::GetInt(Param::opmode) == MOD_RUN);
+  bool lamp;
+  if (NewFault) {
+    glowFlash = !glowFlash;
+    lamp = glowFlash;
+  } else {
+    lamp = run && (derateHold > 0);
+  }
 
   uint32_t data[2] = {0, 0}; // 8 bytes, word aligned, unused bytes zero
   uint8_t *bytes = (uint8_t *)data;
@@ -289,7 +324,7 @@ void JLR_L322::Msg17E80420() // ECM: Dash glow plug orange lamp
   bytes[2] = 0x00;
   bytes[3] = 0x28;
   bytes[4] = 0x00;
-  bytes[5] = 0x00; // Dash glow plug orange light (0x00 Off, 0x80 On)
+  bytes[5] = lamp ? 0x80 : 0x00; // Dash glow plug orange light
 
   can->Send(0x17E80420, data, 6);
 }
